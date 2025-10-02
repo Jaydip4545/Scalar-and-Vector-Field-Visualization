@@ -1,0 +1,7 @@
+#Executables
+bin/*
+
+#Resources
+resources/*
+
+*.o
