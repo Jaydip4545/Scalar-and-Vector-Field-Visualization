@@ -58,7 +58,7 @@ sudo apt install build-essential git libglfw3-dev libglew-dev libglm-dev
 
 2.  **Navigate into the project directory:**
     ```bash
-    cd Voxel-Scope
+    cd FieldVisualizer
     ```
 
 3.  **Run the script to compile and execute the program:**
