@@ -20,6 +20,7 @@ int slicingAxis = 0; // 0=Z, 1=Y, 2=X
 bool showIsosurface = false;
 bool useGpuSlicing = true; // Start with the GPU version by default
 GLuint sliceTexture; 
+bool useGpuMarchingCubes = false;
 
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
     Camera* cam = static_cast<Camera*>(glfwGetWindowUserPointer(window));
@@ -55,6 +56,10 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
         if (key == GLFW_KEY_M) {
             showIsosurface = !showIsosurface;
             std::cout << "Switched to " << (showIsosurface ? "Isosurface View" : "Slicer View") << std::endl;
+        }
+        if (key == GLFW_KEY_H) {
+            useGpuMarchingCubes = !useGpuMarchingCubes;
+            std::cout << "Switched to " << (useGpuMarchingCubes ? "useGpuMarchingCubes " : "useCpuMarchingCubes") << std::endl;
         }
     }
 }
@@ -111,7 +116,7 @@ int main() {
     glfwSetKeyCallback(window, keyCallback);
 
     // --- Load Data ---
-    VtkParser parser("resources/redseaT.vtk");
+    VtkParser parser("resources/redseasmallT.vtk");
     if (!parser.read()) return -1;
     std::vector<float> scalars;
     if (!parser.getScalarField("TEMP", scalars)) return -1;
@@ -209,6 +214,44 @@ int main() {
     
     
     
+    //GPU MC setup
+    	 
+    GLuint mcGpuShader = createShaderProgram("shaders/mc_gpu_vert.glsl", "shaders/mc_gpu_geo.glsl", "shaders/mc_gpu_frag.glsl");
+    
+    GLuint edgeTableTexture, triTableTexture;
+    glGenTextures(1, &edgeTableTexture);
+    glBindTexture(GL_TEXTURE_1D, edgeTableTexture);
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage1D(GL_TEXTURE_1D, 0, GL_R32I, 256, 0, GL_RED_INTEGER, GL_INT, &MarchingCubes::edgeTable[0]);
+
+    glGenTextures(1, &triTableTexture);
+    glBindTexture(GL_TEXTURE_2D, triTableTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32I, 16, 256, 0, GL_RED_INTEGER, GL_INT, &MarchingCubes::triTable[0][0]);
+
+    // Create a VBO containing the ID of every cube for the GPU to process
+    GLuint numCubes = (dims.x - 1) * (dims.y - 1) * (dims.z - 1);
+    std::vector<unsigned int> cubeIDs(numCubes);
+    for (unsigned int i = 0; i < numCubes; ++i) {
+        cubeIDs[i] = i;
+    }
+    
+    GLuint mcGpuVAO, mcGpuVBO;
+    glGenVertexArrays(1, &mcGpuVAO);
+    glGenBuffers(1, &mcGpuVBO);
+    glBindVertexArray(mcGpuVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, mcGpuVBO);
+    glBufferData(GL_ARRAY_BUFFER, cubeIDs.size() * sizeof(unsigned int), cubeIDs.data(), GL_STATIC_DRAW);
+    
+    // Use glVertexAttribIPointer for integer vertex attributes (the 'I' is important)
+    glEnableVertexAttribArray(0);
+    glVertexAttribIPointer(0, 1, GL_UNSIGNED_INT, 0, (void*)0);
+    
+    
+    
+    
     
 
     // --- Main Loop ---
@@ -255,12 +298,33 @@ int main() {
         glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 0.0f, 1.0f, 0.0f); glDrawArrays(GL_LINES, 2, 2);
         glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 0.0f, 0.0f, 1.0f); glDrawArrays(GL_LINES, 4, 2);
 	if (showIsosurface) {
-        // --- ISOSURFACE RENDER PATH (TASK 2) ---
+        
         // Animate the isovalue from min to max and back
         float isovalue_norm = (sin(glfwGetTime() * 0.5f) * 0.5f + 0.5f);
-        float isovalue = min_scalar + isovalue_norm * (max_scalar - min_scalar);
+        float isovalue = 2;//min_scalar + isovalue_norm * (max_scalar - min_scalar);
         
-        // Generate the mesh for the current isovalue
+        
+        
+        if (useGpuMarchingCubes) {
+            // --- GPU ISOSURFACE RENDER PATH ---
+            glUseProgram(mcGpuShader);
+            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_3D, volumeTexture);
+            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_1D, edgeTableTexture);
+            glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, triTableTexture);
+            glUniformMatrix4fv(glGetUniformLocation(mcGpuShader, "mvp"), 1, GL_FALSE, glm::value_ptr(box_mvp));
+            glUniform1i(glGetUniformLocation(mcGpuShader, "volumeTexture"), 0);
+            glUniform1i(glGetUniformLocation(mcGpuShader, "edgeTable"), 1);
+            glUniform1i(glGetUniformLocation(mcGpuShader, "triTable"), 2);
+            glUniform1f(glGetUniformLocation(mcGpuShader, "isovalue"), isovalue);
+            glUniform3iv(glGetUniformLocation(mcGpuShader, "dataDimensions"), 1, glm::value_ptr(dims));
+            glUniform1ui(glGetUniformLocation(mcGpuShader, "totalCubes"), numCubes);
+            glBindVertexArray(mcGpuVAO);
+            glDrawArrays(GL_POINTS, 0, numCubes);
+        }
+        else
+        {
+        	
+        	// Generate the mesh for the current isovalue
         std::vector<Vertex> iso_vertices = mc.generateSurface(scalars, dims, isovalue);
         // *** ADD THIS DEBUG LINE ***
         std::cout << "Isovalue: " << isovalue << "  |  Generated Vertices: " << iso_vertices.size() << "\r";
@@ -287,6 +351,19 @@ int main() {
             // 5. Draw the mesh. The correct VAO is already bound.
             glDrawArrays(GL_TRIANGLES, 0, iso_vertices.size());
        	 }
+        
+        
+        
+        
+        }
+        
+        
+        
+        
+        
+        
+        
+        
 
     	} 
     	else
@@ -357,6 +434,12 @@ int main() {
     glDeleteVertexArrays(1, &quadVAO); glDeleteBuffers(1, &quadVBO); glDeleteBuffers(1, &quadEBO);
     glDeleteProgram(textureShader); glDeleteProgram(flatColorShader); glDeleteProgram(gpuSlicerShader);
     glDeleteTextures(1, &sliceTexture); glDeleteTextures(1, &volumeTexture); glDeleteTextures(1, &colormapTexture);
+    glDeleteProgram(mcGpuShader);
+    glDeleteTextures(1, &edgeTableTexture);
+    glDeleteTextures(1, &triTableTexture);
+    glDeleteVertexArrays(1, &mcGpuVAO);
+    glDeleteBuffers(1, &mcGpuVBO);
+    
     
     glfwTerminate();
     return 0;

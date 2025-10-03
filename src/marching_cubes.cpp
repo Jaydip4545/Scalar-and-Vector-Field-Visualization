@@ -279,7 +279,7 @@ const int MarchingCubes::triTable[256][16] =
 
 // The implementation of the Marching Cubes algorithm, including the lookup tables.
 // This is a standard, well-documented part of the algorithm.
-// (The full tables are very large and will be provided in the next response block)
+
 
 glm::vec3 MarchingCubes::vertexInterp(float isovalue, glm::vec3 p1, glm::vec3 p2, float val1, float val2) {
     if (std::abs(isovalue - val1) < 0.00001f) return p1;
@@ -306,7 +306,7 @@ std::vector<Vertex> MarchingCubes::generateSurface(const std::vector<float>& sca
                 float cornerVal[8];
                 int cubeindex = 0;
 
-                for (int i = 0; i < 8; ++i) {
+                for (int i = 0; i < 8; ++i) {		
                     int dx = (i == 1 || i == 2 || i == 5 || i == 6);
                     int dy = (i == 2 || i == 3 || i == 6 || i == 7);
                     int dz = (i == 4 || i == 5 || i == 6 || i == 7);
@@ -342,13 +342,13 @@ std::vector<Vertex> MarchingCubes::generateSurface(const std::vector<float>& sca
                  float progress = (float)currentCube / (float)totalCubes;
                 glm::vec3 color = glm::vec3(progress, 1.0f - progress, 0.0f);
 
-                // *** ADD THIS LINE for normalization ***
+               
                 glm::vec3 dims_f = glm::vec3(dims.x - 1, dims.y - 1, dims.z - 1);
 
                 for (int i = 0; triTable[cubeindex][i] != -1; i += 3) {
                     Vertex v1, v2, v3;
 
-                    // *** MODIFY THESE 3 LINES ***
+                    
                     // Normalize the grid-space positions to [0,1] unit space
                     v1.pos = vertlist[triTable[cubeindex][i]] / dims_f;
                     v2.pos = vertlist[triTable[cubeindex][i+1]] / dims_f;

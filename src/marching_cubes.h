@@ -12,7 +12,11 @@ struct Vertex {
 
 class MarchingCubes {
 public:
-    // Main function to generate the isosurface mesh
+
+	// The two essential lookup tables for the algorithm
+    static const int edgeTable[256];
+    static const int triTable[256][16];
+    	// Main function to generate the isosurface mesh
     std::vector<Vertex> generateSurface(const std::vector<float>& scalars, 
                                         glm::ivec3 dims, 
                                         float isovalue);
@@ -21,9 +25,7 @@ private:
     // Helper function to calculate a vertex's position along an edge
     glm::vec3 vertexInterp(float isovalue, glm::vec3 p1, glm::vec3 p2, float val1, float val2);
 
-    // The two essential lookup tables for the algorithm
-    static const int edgeTable[256];
-    static const int triTable[256][16];
+    
 };
 
 #endif // MARCHING_CUBES_H
