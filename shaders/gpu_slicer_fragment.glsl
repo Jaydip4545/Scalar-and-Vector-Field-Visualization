@@ -1,26 +1,36 @@
 #version 330 core
 out vec4 FragColor;
 
-// The interpolated 3D position from the vertex shader
-in vec3 TexCoord3D; 
+in vec2 TexCoord; // The 2D coordinate from the vertex shader
 
-// Our two main data sources on the GPU
 uniform sampler3D volumeTexture;
 uniform sampler1D colormapTexture;
-
-// Min/max values for normalization
 uniform float minScalar;
 uniform float maxScalar;
 
+// New uniforms to tell the shader where the slice is
+uniform float sliceNorm;
+uniform int slicingAxis; // 0=Z, 1=Y, 2=X
+
 void main()
 {
-    // 1. Sample the 3D volume at the given coordinate to get the scalar value.
-    // The '.r' gets the red channel, which is where we stored our single scalar value.
-    float scalarValue = texture(volumeTexture, TexCoord3D).r;
+    // 1. Construct the 3D texture coordinate based on the slicing axis
+    vec3 texCoord3D;
+    if (slicingAxis == 0) { // Z-Slice
+        texCoord3D = vec3(TexCoord.x, TexCoord.y, sliceNorm);
+    } else if (slicingAxis == 1) { // Y-Slice
+        texCoord3D = vec3(TexCoord.x, sliceNorm, TexCoord.y);
+    } else { // X-Slice
+        texCoord3D = vec3(sliceNorm, TexCoord.x, TexCoord.y);
+    }
+
+    // 2. Sample the volume with the newly constructed coordinate
+    float scalarValue = texture(volumeTexture, texCoord3D).r;
     
-    // 2. Normalize the scalar value to the [0, 1] range.
-    float normalizedScalar = (scalarValue - minScalar) / (maxScalar - minScalar);
-    
-    // 3. Use the normalized value as a coordinate to look up the color in our 1D colormap.
+    // 3. Normalize and get color (same as before)
+    float normalizedScalar = 0.0;
+    if (maxScalar > minScalar) {
+        normalizedScalar = (scalarValue - minScalar) / (maxScalar - minScalar);
+    }
     FragColor = texture(colormapTexture, normalizedScalar);
 }

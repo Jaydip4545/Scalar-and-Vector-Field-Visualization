@@ -12,11 +12,14 @@
 #include "camera.h"
 #include "vtk_parser.h"
 #include "shader_utils.h"
+#include "marching_cubes.h"
 
 // --- Globals & Callbacks ---
 Camera camera(800, 600);
 int slicingAxis = 0; // 0=Z, 1=Y, 2=X
+bool showIsosurface = false;
 bool useGpuSlicing = true; // Start with the GPU version by default
+GLuint sliceTexture; 
 
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
     Camera* cam = static_cast<Camera*>(glfwGetWindowUserPointer(window));
@@ -48,6 +51,10 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
             } else {
                 std::cout << "Switched to CPU Slicing" << std::endl;
             }
+        }
+        if (key == GLFW_KEY_M) {
+            showIsosurface = !showIsosurface;
+            std::cout << "Switched to " << (showIsosurface ? "Isosurface View" : "Slicer View") << std::endl;
         }
     }
 }
@@ -104,307 +111,252 @@ int main() {
     glfwSetKeyCallback(window, keyCallback);
 
     // --- Load Data ---
-    std::cout<<"Loading Data"<<std::endl;
     VtkParser parser("resources/redseaT.vtk");
     if (!parser.read()) return -1;
-    std::cout<<"Loaded Data"<<std::endl;
     std::vector<float> scalars;
-    // SPECIFY WHICH FIELD TO VISUALIZE
     if (!parser.getScalarField("TEMP", scalars)) return -1;
     
-    	glm::ivec3 dims = parser.getDimensions();
-	//glm::vec3 origin = parser.getOrigin();
-	glm::vec3 spacing = parser.getSpacing();
+    glm::ivec3 dims = parser.getDimensions();
+    glm::vec3 spacing = parser.getSpacing();
+    glm::vec3 size = glm::vec3(dims - glm::ivec3(1)) * spacing;
+    float min_scalar = *std::min_element(scalars.begin(), scalars.end());
+    float max_scalar = *std::max_element(scalars.begin(), scalars.end());
 
-	// --- Calculate True Bounding Box ---
-	glm::vec3 size = glm::vec3(dims - glm::ivec3(1)) * spacing;
-	//glm::vec3 center = origin + size / 2.0f;
+    // --- Auto-fit Camera (now using the true size) ---
 
-	float min_scalar = *std::min_element(scalars.begin(), scalars.end());
-	float max_scalar = *std::max_element(scalars.begin(), scalars.end());
+    float radius = glm::length(size) * 0.5f;
 
-	// --- Auto-fit Camera (now using the true size) ---
-	float radius = glm::length(size) * 0.5f;
-	float fov_radians = glm::radians(45.0f);
-	float distance = radius / tan(fov_radians / 2.0f);
-	camera.setZoom(distance * 1.5f); // Use new distance
+    float fov_radians = glm::radians(45.0f);
+
+    float distance = radius / tan(fov_radians / 2.0f);
+
+    camera.setZoom(distance * 1.5f); // Use new distance 
     
-    
-
     // --- Shaders ---
-    std::cout<<"compiling shaders"<<std::endl;
     GLuint textureShader = createShaderProgram("shaders/texture_vertex.glsl", "shaders/texture_fragment.glsl");
     GLuint flatColorShader = createShaderProgram("shaders/flat_color_vertex.glsl", "shaders/flat_color_fragment.glsl");
-    std::cout<<"compiled shaders"<<std::endl;
+    GLuint gpuSlicerShader = createShaderProgram("shaders/gpu_slicer_vertex.glsl", "shaders/gpu_slicer_fragment.glsl");
 
-    // --- Bounding Box Geometry ---
-    float box_vertices[] = {
-        0,0,0, 1,0,0, 1,0,0, 1,1,0, 1,1,0, 0,1,0, 0,1,0, 0,0,0,
-        0,0,1, 1,0,1, 1,0,1, 1,1,1, 1,1,1, 0,1,1, 0,1,1, 0,0,1,
-        0,0,0, 0,0,1, 1,0,0, 1,0,1, 1,1,0, 1,1,1, 0,1,0, 0,1,1
-    };
+    // --- Geometry ---
+    float box_vertices[] = {0,0,0, 1,0,0, 1,0,0, 1,1,0, 1,1,0, 0,1,0, 0,1,0, 0,0,0, 0,0,1, 1,0,1, 1,0,1, 1,1,1, 1,1,1, 0,1,1, 0,1,1, 0,0,1, 0,0,0, 0,0,1, 1,0,0, 1,0,1, 1,1,0, 1,1,1, 0,1,0, 0,1,1};
     GLuint boxVAO, boxVBO;
-    glGenVertexArrays(1, &boxVAO);
-    glGenBuffers(1, &boxVBO);
-    glBindVertexArray(boxVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, boxVBO);
+    glGenVertexArrays(1, &boxVAO); glGenBuffers(1, &boxVBO);
+    glBindVertexArray(boxVAO); glBindBuffer(GL_ARRAY_BUFFER, boxVBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(box_vertices), box_vertices, GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
-    // --- Slice Plane Geometry ---
-    float quad_vertices[] = {
-        0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-        1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
-        1.0f, 1.0f, 0.0f, 1.0f, 1.0f,
-        0.0f, 1.0f, 0.0f, 0.0f, 1.0f
-    };
-    unsigned int quad_indices[] = {0, 1, 2, 2, 3, 0};
-    GLuint quadVAO, quadVBO, quadEBO;
-    glGenVertexArrays(1, &quadVAO);
-    glGenBuffers(1, &quadVBO);
-    glGenBuffers(1, &quadEBO);
-    glBindVertexArray(quadVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices), quad_vertices, GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadEBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(quad_indices), quad_indices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    
-    
-    //color axis
-      float axis_vertices[] = {
-        // X-axis (Red)
-        0.0f, 0.0f, 0.0f,
-        1.0f, 0.0f, 0.0f,
-        // Y-axis (Green)
-        0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f,
-        // Z-axis (Blue)
-        0.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f
-    };
-    GLuint axisVAO, axisVBO;
-    glGenVertexArrays(1, &axisVAO);
-    glGenBuffers(1, &axisVBO);
-    glBindVertexArray(axisVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, axisVBO);
+    float axis_vertices[] = {0,0,0, 1,0,0, 0,0,0, 0,1,0, 0,0,0, 0,0,1};
+    GLuint axisVAO_g, axisVBO_g; // Use unique names to avoid bug
+    glGenVertexArrays(1, &axisVAO_g); glGenBuffers(1, &axisVBO_g);
+    glBindVertexArray(axisVAO_g); glBindBuffer(GL_ARRAY_BUFFER, axisVBO_g);
     glBufferData(GL_ARRAY_BUFFER, sizeof(axis_vertices), axis_vertices, GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
-
-    // --- Slice Texture Setup ---
-    GLuint sliceTexture;
+    float quad_vertices[] = {0,0,0, 0,0, 1,0,0, 1,0, 1,1,0, 1,1, 0,1,0, 0,1};
+    unsigned int quad_indices[] = {0, 1, 2, 2, 3, 0};
+    GLuint quadVAO, quadVBO, quadEBO;
+    glGenVertexArrays(1, &quadVAO); glGenBuffers(1, &quadVBO); glGenBuffers(1, &quadEBO);
+    glBindVertexArray(quadVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, quadVBO); glBufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices), quad_vertices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadEBO); glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(quad_indices), quad_indices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0); glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float))); glEnableVertexAttribArray(1);
+    
+    // --- CPU Slicing Resources ---
     glGenTextures(1, &sliceTexture);
     glBindTexture(GL_TEXTURE_2D, sliceTexture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    std::vector<unsigned char> textureData(dims.x * dims.y * 3);
-    
-    
-    
-    
+    std::vector<unsigned char> textureData;
 
-    // --- GPU Slicing Setup ---
-    // 1. Create and load the 3D texture for the scalar field
+    // --- GPU Slicing Resources ---
     GLuint volumeTexture;
     glGenTextures(1, &volumeTexture);
     glBindTexture(GL_TEXTURE_3D, volumeTexture);
-
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    
-    // Upload the scalar data. We use GL_R32F for 32-bit float internal format
-    // and GL_RED since we only have one component (the scalar value).
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexImage3D(GL_TEXTURE_3D, 0, GL_R32F, dims.x, dims.y, dims.z, 0, GL_RED, GL_FLOAT, scalars.data());
     
-    // 2. Create and load the 1D texture for the colormap
     GLuint colormapTexture;
     glGenTextures(1, &colormapTexture);
     glBindTexture(GL_TEXTURE_1D, colormapTexture);
-    
     glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-    // Upload the colormap data (using the classic blue-white-red)
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     std::vector<glm::vec3> colormap_data;
-    for(int i = 0; i < 256; ++i) {
-        colormap_data.push_back(getColor((float)i, 0.0f, 255.0f));
-    }
+    for(int i = 0; i < 256; ++i) colormap_data.push_back(getColor((float)i, 0.0f, 255.0f));
     glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, colormap_data.size(), 0, GL_RGB, GL_FLOAT, colormap_data.data());
+    
+    
+     // --- Marching Cubes Setup ---
+    MarchingCubes mc;
+    GLuint isoVAO, isoVBO;
+    glGenVertexArrays(1, &isoVAO);
+    glGenBuffers(1, &isoVBO);
+    glBindVertexArray(isoVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, isoVBO);
+    // Setup vertex attributes for our Vertex struct (pos and color)
+    // Position
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, pos));
+    glEnableVertexAttribArray(0);
+    // Color
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color));
+    glEnableVertexAttribArray(1);
 
-    // --- Load the new GPU shader ---
-    GLuint gpuSlicerShader = createShaderProgram("shaders/gpu_slicer_vertex.glsl", "shaders/gpu_slicer_fragment.glsl");
+    // Load the new shader for the isosurface
+    GLuint vertexColorShader = createShaderProgram("shaders/mc_cpu_vert.glsl", "shaders/mc_cpu_frag.glsl");
+    
+    
+    
     
 
-    glEnable(GL_DEPTH_TEST);
-    
     // --- Main Loop ---
-    std::cout<<"Entering main"<<std::endl;
+    glEnable(GL_DEPTH_TEST);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    double lastTime = glfwGetTime();
+    int frameCount = 0;
+
     while (!glfwWindowShouldClose(window)) {
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        // --- Animate Slice Position ---
-    float slice_norm = (sin(glfwGetTime() * 0.5f) * 0.5f + 0.5f); // Normalized position [0, 1]
-
-    // --- Generate Slice Texture on CPU based on axis ---
-    int texWidth, texHeight;
-    switch (slicingAxis) {
-        case 0: // Z-axis
-            texWidth = dims.x; texHeight = dims.y;
-            textureData.resize(texWidth * texHeight * 3);
-            for (int y = 0; y < texHeight; ++y) {
-                for (int x = 0; x < texWidth; ++x) {
-                    float slice_coord = slice_norm * (dims.z - 1.0f);
-                    float val = parser.getValue(scalars, glm::vec3(x, y, slice_coord));
-                    glm::vec3 color = getColor(val, min_scalar, max_scalar);
-                    int index = (y * texWidth + x) * 3;
-                    textureData[index + 0] = static_cast<unsigned char>(color.r * 255);
-                    textureData[index + 1] = static_cast<unsigned char>(color.g * 255);
-                    textureData[index + 2] = static_cast<unsigned char>(color.b * 255);
-                }
-            }
-            break;
-        case 1: // Y-axis
-            texWidth = dims.x; texHeight = dims.z;
-            textureData.resize(texWidth * texHeight * 3);
-            for (int z = 0; z < texHeight; ++z) {
-                for (int x = 0; x < texWidth; ++x) {
-                    float slice_coord = slice_norm * (dims.y - 1.0f);
-                    float val = parser.getValue(scalars, glm::vec3(x, slice_coord, z));
-                    glm::vec3 color = getColor(val, min_scalar, max_scalar);
-                    int index = (z * texWidth + x) * 3;
-                    textureData[index + 0] = static_cast<unsigned char>(color.r * 255);
-                    textureData[index + 1] = static_cast<unsigned char>(color.g * 255);
-                    textureData[index + 2] = static_cast<unsigned char>(color.b * 255);
-                }
-            }
-            break;
-        case 2: // X-axis
-            texWidth = dims.y; texHeight = dims.z;
-            textureData.resize(texWidth * texHeight * 3);
-            for (int z = 0; z < texHeight; ++z) {
-                for (int y = 0; y < texWidth; ++y) {
-                    float slice_coord = slice_norm * (dims.x - 1.0f);
-                    float val = parser.getValue(scalars, glm::vec3(slice_coord, y, z));
-                    glm::vec3 color = getColor(val, min_scalar, max_scalar);
-                    int index = (z * texWidth + y) * 3;
-                    textureData[index + 0] = static_cast<unsigned char>(color.r * 255);
-                    textureData[index + 1] = static_cast<unsigned char>(color.g * 255);
-                    textureData[index + 2] = static_cast<unsigned char>(color.b * 255);
-                }
-            }
-            break;
-    }
-
-
-        glBindTexture(GL_TEXTURE_2D, sliceTexture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texWidth, texHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, textureData.data());
-
+        // --- Common Calculations ---
+        float slice_norm = (sin(glfwGetTime() * 0.5f) * 0.5f + 0.5f);
+        int width, height;
+        glfwGetFramebufferSize(window, &width, &height);
+        if (height == 0) height = 1;
         glm::mat4 view = camera.getViewMatrix();
-         
-	int width, height;
-    glfwGetFramebufferSize(window, &width, &height);
-    // Avoid division by zero
-    if (height == 0) height = 1; 
+        glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)width / (float)height, 0.1f, 2000.0f);
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), -size / 2.0f) * glm::scale(glm::mat4(1.0f), size);
 
-    // --- Create projection matrix with correct aspect ratio ---
-    glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)width / (float)height, 0.1f, 1000.0f);
-        //glm::mat4 model_norm = glm::translate(glm::mat4(1.0f), glm::vec3(-0.5f, -0.5f, -0.5f));
+        glm::mat4 slice_pos_model = glm::mat4(1.0f), slice_rotation_model = glm::mat4(1.0f);
+        switch(slicingAxis){
+            case 0: slice_pos_model = glm::translate(slice_pos_model, glm::vec3(0.5f, 0.5f, slice_norm)); break;
+            case 1: slice_rotation_model = glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f)); slice_pos_model = glm::translate(slice_pos_model, glm::vec3(0.5f, slice_norm, 0.5f)); break;
+            case 2: slice_rotation_model = glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f)); slice_pos_model = glm::translate(slice_pos_model, glm::vec3(slice_norm, 0.5f, 0.5f)); break;
+        }
+        glm::mat4 quad_center_model = glm::translate(glm::mat4(1.0f), glm::vec3(-0.5f, -0.5f, 0.0f));
+        glm::mat4 slice_mvp = projection * view * model * slice_pos_model * slice_rotation_model * quad_center_model;
         
-        // --- Draw Bounding Box ---
+        // --- Draw Bounding Box & Axis ---
         glUseProgram(flatColorShader);
-
-        glm::mat4 scaleMatrix = glm::scale(glm::mat4(1.0f), size);
-	// 2. Create a matrix to translate the scaled box so its center moves to the origin.
-	glm::mat4 translateMatrix = glm::translate(glm::mat4(1.0f), -size / 2.0f);
-
-	// 3. Combine them: first scale, then translate. This is our final model matrix.
-	glm::mat4 model = translateMatrix * scaleMatrix;
-        
         glm::mat4 box_mvp = projection * view * model;
         glUniformMatrix4fv(glGetUniformLocation(flatColorShader, "mvp"), 1, GL_FALSE, glm::value_ptr(box_mvp));
         glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 1.0f, 1.0f, 1.0f);
         glBindVertexArray(boxVAO);
         glDrawArrays(GL_LINES, 0, 24);
         
-        
-        
-         // --- Draw Axis Gizmo ---
-        glBindVertexArray(axisVAO);
-        // A slightly larger model matrix to make the axes stick out a bit
-        glm::mat4 axis_model = glm::scale(model, glm::vec3(1.2f, 1.2f, 1.2f));
+        glBindVertexArray(axisVAO_g);
+        glm::mat4 axis_model = glm::scale(model, glm::vec3(1.1f));
         glm::mat4 axis_mvp = projection * view * axis_model;
         glUniformMatrix4fv(glGetUniformLocation(flatColorShader, "mvp"), 1, GL_FALSE, glm::value_ptr(axis_mvp));
+        glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 1.0f, 0.0f, 0.0f); glDrawArrays(GL_LINES, 0, 2);
+        glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 0.0f, 1.0f, 0.0f); glDrawArrays(GL_LINES, 2, 2);
+        glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 0.0f, 0.0f, 1.0f); glDrawArrays(GL_LINES, 4, 2);
+	if (showIsosurface) {
+        // --- ISOSURFACE RENDER PATH (TASK 2) ---
+        // Animate the isovalue from min to max and back
+        float isovalue_norm = (sin(glfwGetTime() * 0.5f) * 0.5f + 0.5f);
+        float isovalue = min_scalar + isovalue_norm * (max_scalar - min_scalar);
         
-        // Draw X-axis in Red
-        glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 1.0f, 0.0f, 0.0f);
-        glDrawArrays(GL_LINES, 0, 2);
-        	
-        // Draw Y-axis in Green
-        glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 0.0f, 1.0f, 0.0f);
-        glDrawArrays(GL_LINES, 2, 2);
+        // Generate the mesh for the current isovalue
+        std::vector<Vertex> iso_vertices = mc.generateSurface(scalars, dims, isovalue);
+        // *** ADD THIS DEBUG LINE ***
+        std::cout << "Isovalue: " << isovalue << "  |  Generated Vertices: " << iso_vertices.size() << "\r";
+
+		if (!iso_vertices.empty()) {
+            
+            // *** THE CORRECT ORDER ***
+
+            // 1. Bind the VAO for the isosurface FIRST.
+            // This activates the entire "preset" for our isosurface mesh.
+            glBindVertexArray(isoVAO);
+
+            // 2. Bind the VBO associated with this VAO.
+            glBindBuffer(GL_ARRAY_BUFFER, isoVBO);
+
+            // 3. Now, upload the data to the currently bound VBO.
+            glBufferData(GL_ARRAY_BUFFER, iso_vertices.size() * sizeof(Vertex), iso_vertices.data(), GL_DYNAMIC_DRAW);
+
+            // 4. Use the correct shader and set its uniforms.
+            glUseProgram(vertexColorShader);
+            glm::mat4 iso_mvp = projection * view * model;
+            glUniformMatrix4fv(glGetUniformLocation(vertexColorShader, "mvp"), 1, GL_FALSE, glm::value_ptr(iso_mvp));
+            
+            // 5. Draw the mesh. The correct VAO is already bound.
+            glDrawArrays(GL_TRIANGLES, 0, iso_vertices.size());
+       	 }
+
+    	} 
+    	else
+    	{
+    
+    		// --- Conditional Rendering ---
+        if (useGpuSlicing) {
+            // --- GPU RENDER PATH ---
+            glUseProgram(gpuSlicerShader);
+            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_3D, volumeTexture);
+            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_1D, colormapTexture);
+            
+            // Set all uniforms
+            glUniform1i(glGetUniformLocation(gpuSlicerShader, "volumeTexture"), 0);
+            glUniform1i(glGetUniformLocation(gpuSlicerShader, "colormapTexture"), 1);
+            glUniform1f(glGetUniformLocation(gpuSlicerShader, "minScalar"), min_scalar);
+            glUniform1f(glGetUniformLocation(gpuSlicerShader, "maxScalar"), max_scalar);
+            
+            // Send the two NEW uniforms
+            glUniform1f(glGetUniformLocation(gpuSlicerShader, "sliceNorm"), slice_norm);
+            glUniform1i(glGetUniformLocation(gpuSlicerShader, "slicingAxis"), slicingAxis);
+
+            // Send the MVP matrix (this is now the same for both shaders)
+            glUniformMatrix4fv(glGetUniformLocation(gpuSlicerShader, "mvp"), 1, GL_FALSE, glm::value_ptr(slice_mvp));
+        } else {
+            int texWidth, texHeight;
+            switch(slicingAxis){
+                case 0: texWidth = dims.x; texHeight = dims.y; textureData.resize(texWidth * texHeight * 3); for(int y=0;y<texHeight;++y)for(int x=0;x<texWidth;++x){ float v = parser.getValue(scalars,glm::vec3(x,y,slice_norm*(dims.z-1.f))); glm::vec3 c=getColor(v,min_scalar,max_scalar); int i=(y*texWidth+x)*3; textureData[i]=c.r*255; textureData[i+1]=c.g*255; textureData[i+2]=c.b*255; } break;
+                case 1: texWidth = dims.x; texHeight = dims.z; textureData.resize(texWidth * texHeight * 3); for(int z=0;z<texHeight;++z)for(int x=0;x<texWidth;++x){ float v = parser.getValue(scalars,glm::vec3(x,slice_norm*(dims.y-1.f),z)); glm::vec3 c=getColor(v,min_scalar,max_scalar); int i=(z*texWidth+x)*3; textureData[i]=c.r*255; textureData[i+1]=c.g*255; textureData[i+2]=c.b*255; } break;
+                case 2: texWidth = dims.y; texHeight = dims.z; textureData.resize(texWidth * texHeight * 3); for(int z=0;z<texHeight;++z)for(int y=0;y<texWidth;++y){ float v = parser.getValue(scalars,glm::vec3(slice_norm*(dims.x-1.f),y,z)); glm::vec3 c=getColor(v,min_scalar,max_scalar); int i=(z*texWidth+y)*3; textureData[i]=c.r*255; textureData[i+1]=c.g*255; textureData[i+2]=c.b*255; } break;
+            }
+            glBindTexture(GL_TEXTURE_2D, sliceTexture);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texWidth, texHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, textureData.data());
+            glUseProgram(textureShader);
+            glUniformMatrix4fv(glGetUniformLocation(textureShader, "mvp"), 1, GL_FALSE, glm::value_ptr(slice_mvp));
+        }
         
-        // Draw Z-axis in Blue
-        glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 0.0f, 0.0f, 1.0f);
-        glDrawArrays(GL_LINES, 4, 2);
-        
-        
-        
-        
+        glBindVertexArray(quadVAO);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    
+    
+    
+    
+    	}
         
 
-        // --- Draw Slice Plane ---
-        glUseProgram(textureShader);
-        
-         
-    
-    glUseProgram(textureShader);
-    glm::mat4 slice_pos_model = glm::mat4(1.0f);
-    glm::mat4 slice_rotation_model = glm::mat4(1.0f);
-    switch (slicingAxis) {
-        case 0: // Z-Slice
-            slice_pos_model = glm::translate(slice_pos_model, glm::vec3(0.5f, 0.5f, slice_norm));
-            break;
-        case 1: // Y-Slice
-            slice_rotation_model = glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-            slice_pos_model = glm::translate(slice_pos_model, glm::vec3(0.5f, slice_norm, 0.5f));
-            break;
-        case 2: // X-Slice
-            slice_rotation_model = glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-            slice_pos_model = glm::translate(slice_pos_model, glm::vec3(slice_norm, 0.5f, 0.5f));
-            break;
-    }
-    glm::mat4 quad_center_model = glm::translate(glm::mat4(1.0f), glm::vec3(-0.5f, -0.5f, 0.0f));
-    glm::mat4 slice_mvp = projection * view * model * slice_pos_model * slice_rotation_model * quad_center_model;
-    
-    glUniformMatrix4fv(glGetUniformLocation(textureShader, "mvp"), 1, GL_FALSE, glm::value_ptr(slice_mvp));
-    glBindTexture(GL_TEXTURE_2D, sliceTexture);
-    glBindVertexArray(quadVAO);
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        // --- FPS Counter ---
+        double currentTime = glfwGetTime();
+        frameCount++;
+        if (currentTime - lastTime >= 1.0) {
+            std::stringstream ss;
+            ss << "VoxelScope | " << (useGpuSlicing ? "GPU" : "CPU") << " | FPS: " << frameCount;
+            glfwSetWindowTitle(window, ss.str().c_str());
+            frameCount = 0;								
+            lastTime = currentTime;
+        }
+
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
     
     // --- Cleanup ---
-    glDeleteVertexArrays(1, &boxVAO);
-    glDeleteBuffers(1, &boxVBO);
-    glDeleteVertexArrays(1, &quadVAO);
-    glDeleteBuffers(1, &quadVBO);
-    glDeleteBuffers(1, &quadEBO);
-    glDeleteProgram(textureShader);
-    glDeleteProgram(flatColorShader);
-    glDeleteTextures(1, &sliceTexture);
+    glDeleteVertexArrays(1, &isoVAO);
+    glDeleteBuffers(1, &isoVBO);
+    glDeleteProgram(vertexColorShader);
+    glDeleteVertexArrays(1, &boxVAO); glDeleteBuffers(1, &boxVBO);
+    glDeleteVertexArrays(1, &axisVAO_g); glDeleteBuffers(1, &axisVBO_g);
+    glDeleteVertexArrays(1, &quadVAO); glDeleteBuffers(1, &quadVBO); glDeleteBuffers(1, &quadEBO);
+    glDeleteProgram(textureShader); glDeleteProgram(flatColorShader); glDeleteProgram(gpuSlicerShader);
+    glDeleteTextures(1, &sliceTexture); glDeleteTextures(1, &volumeTexture); glDeleteTextures(1, &colormapTexture);
     
     glfwTerminate();
     return 0;
