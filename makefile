@@ -1,46 +1,57 @@
-# Compiler
+# --- Compiler ---
 CXX = g++
 CXXFLAGS = -std=c++11 -Wall -I./src/
-
-# Libraries
-LIBS = -lglfw -lGLEW -lGL -ldl
 
 # --- Directories ---
 SRC_DIR = src
 OBJ_DIR = obj
 BIN_DIR = bin
-TARGET = $(BIN_DIR)/Visualizer
 
 # --- Source Files ---
-# Automatically find all .cpp files in the src directory
 SRCS = $(wildcard $(SRC_DIR)/*.cpp)
-# Create a list of object files in the obj directory
 OBJS = $(patsubst $(SRC_DIR)/%.cpp, $(OBJ_DIR)/%.o, $(SRCS))
 
-# --- Rules ---
+# --- Detect platform ---
+UNAME_S := $(shell uname -s)
 
-# Default rule: build everything
+ifeq ($(UNAME_S),Linux)
+    TARGET = $(BIN_DIR)/Visualizer
+    LIBS = -lglfw -lGLEW -lGL -ldl
+    EXE_EXT =
+else ifeq ($(OS),Windows_NT)
+    TARGET = $(BIN_DIR)/Visualizer.exe
+    LIBS = -lglfw3 -lglew32 -lopengl32 -lgdi32
+    EXE_EXT = .exe
+else
+    $(error Unsupported OS)
+endif
+
+# --- Default target ---
 all: $(TARGET)
 
-# Rule to link the program
+# --- Linking ---
 $(TARGET): $(OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CXX) $^ -o $@ $(LIBS)
 	@echo "Linking complete. Executable is at $(TARGET)"
 
-# Rule to compile .cpp files into .o files
+# --- Compiling ---
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@mkdir -p $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 	@echo "Compiled $<"
 
-# Clean up build files
+# --- Clean ---
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
 	@echo "Cleaned build directories."
 
-# A phony target to run the program
+# --- Run ---
 run: all
+ifeq ($(EXE_EXT),.exe)
 	./$(TARGET)
+else
+	./$(TARGET)
+endif
 
 .PHONY: all clean run

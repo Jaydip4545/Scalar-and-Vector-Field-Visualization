@@ -116,7 +116,7 @@ int main() {
     glfwSetKeyCallback(window, keyCallback);
 
     // --- Load Data ---
-    VtkParser parser("resources/redseasmallT.vtk");
+    VtkParser parser("resources/redseaT.vtk");
     if (!parser.read()) return -1;
     std::vector<float> scalars;
     if (!parser.getScalarField("TEMP", scalars)) return -1;
@@ -301,7 +301,7 @@ int main() {
         
         // Animate the isovalue from min to max and back
         float isovalue_norm = (sin(glfwGetTime() * 0.5f) * 0.5f + 0.5f);
-        float isovalue = 2;//min_scalar + isovalue_norm * (max_scalar - min_scalar);
+        float isovalue = min_scalar + isovalue_norm * (max_scalar - min_scalar);
         
         
         
@@ -395,9 +395,11 @@ int main() {
                 case 1: texWidth = dims.x; texHeight = dims.z; textureData.resize(texWidth * texHeight * 3); for(int z=0;z<texHeight;++z)for(int x=0;x<texWidth;++x){ float v = parser.getValue(scalars,glm::vec3(x,slice_norm*(dims.y-1.f),z)); glm::vec3 c=getColor(v,min_scalar,max_scalar); int i=(z*texWidth+x)*3; textureData[i]=c.r*255; textureData[i+1]=c.g*255; textureData[i+2]=c.b*255; } break;
                 case 2: texWidth = dims.y; texHeight = dims.z; textureData.resize(texWidth * texHeight * 3); for(int z=0;z<texHeight;++z)for(int y=0;y<texWidth;++y){ float v = parser.getValue(scalars,glm::vec3(slice_norm*(dims.x-1.f),y,z)); glm::vec3 c=getColor(v,min_scalar,max_scalar); int i=(z*texWidth+y)*3; textureData[i]=c.r*255; textureData[i+1]=c.g*255; textureData[i+2]=c.b*255; } break;
             }
+	    glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, sliceTexture);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texWidth, texHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, textureData.data());
             glUseProgram(textureShader);
+            glUniform1i(glGetUniformLocation(textureShader, "ourTexture"), 0);
             glUniformMatrix4fv(glGetUniformLocation(textureShader, "mvp"), 1, GL_FALSE, glm::value_ptr(slice_mvp));
         }
         
