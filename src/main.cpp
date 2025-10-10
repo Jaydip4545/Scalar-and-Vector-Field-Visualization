@@ -96,7 +96,19 @@ glm::vec3 getColor(float value, float min_val, float max_val) {
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+
+
+
+	
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <path_to_vtk_file> [optional_field_name]" << std::endl;
+        std::cerr << "Example: " << argv[0] << " resources/redseaT.vtk TEMP" << std::endl;
+        return 1;
+    }
+
+    std::string vtk_filepath = argv[1];
+
     // --- GLFW/GLEW Initialization ---
     if (!glfwInit()) return -1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -116,10 +128,28 @@ int main() {
     glfwSetKeyCallback(window, keyCallback);
 
     // --- Load Data ---
-    VtkParser parser("resources/redseasmallT.vtk");
+    VtkParser parser(vtk_filepath);
     if (!parser.read()) return -1;
     std::vector<float> scalars;
-    if (!parser.getScalarField("TEMP", scalars)) return -1;
+    std::string fieldName;
+    
+    if (argc > 2) {
+        // A field name was provided as the second argument
+        fieldName = argv[2];
+        std::cout << "Attempting to visualize user-specified field: " << fieldName << std::endl;
+    } else {
+        // No field name provided, get the first one from the file
+        fieldName = parser.getFirstFieldName();
+        if (fieldName.empty()) {
+            std::cerr << "Error: No scalar fields found in the VTK file." << std::endl;
+            return -1;
+        }
+        std::cout << "No field specified. Visualizing first available field: " << fieldName << std::endl;
+    }
+    
+    
+    
+    if (!parser.getScalarField(fieldName, scalars)) return -1;
     
     glm::ivec3 dims = parser.getDimensions();
     glm::vec3 spacing = parser.getSpacing();

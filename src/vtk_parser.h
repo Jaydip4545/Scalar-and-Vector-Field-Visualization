@@ -15,6 +15,8 @@ public:
 
     // Accessors
     const glm::ivec3& getDimensions() const { return dimensions; }
+    std::string getFirstFieldName() const;
+    
     
     // Get a specific scalar field by name
     bool getScalarField(const std::string& fieldName, std::vector<float>& scalars) const;

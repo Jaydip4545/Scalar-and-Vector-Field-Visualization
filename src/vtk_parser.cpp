@@ -116,3 +116,17 @@ float VtkParser::getValue(const std::vector<float>& scalars, const glm::vec3& co
 
     return c0 * (1 - zd) + c1 * zd;
 }
+
+std::string VtkParser::getFirstFieldName() const {
+    if (scalarFields.empty()) {
+        return ""; // Return empty string if no fields were found
+    }
+    return scalarFields.begin()->first; // Return the name of the first field
+}
+
+
+
+
+
+
+
