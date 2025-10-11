@@ -52,7 +52,7 @@ def convert_raw_to_vtk(raw_filepath, vtk_filepath, dims, spacing=(1.0, 1.0, 1.0)
         # --- Point Data ---
         f.write(f"POINT_DATA {data.size}\n")
         f.write("FIELD FieldData 1\n")
-        f.write(f"SALT 1 {data.size} double\n")
+        f.write(f"ScalarField 1 {data.size} double\n")
         
         # --- Write Data Values ---
         for i, value in enumerate(data):

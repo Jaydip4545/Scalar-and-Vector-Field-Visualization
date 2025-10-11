@@ -447,7 +447,15 @@ int main(int argc, char* argv[]) {
         frameCount++;
         if (currentTime - lastTime >= 1.0) {
             std::stringstream ss;
-            ss << "VoxelScope | " << (useGpuSlicing ? "GPU" : "CPU") << " | FPS: " << frameCount;
+            
+            if(showIsosurface)
+            {
+            	ss << "Field Visualizer | " << (useGpuMarchingCubes ? "GPU" : "CPU") << " | FPS: " << frameCount;
+            }
+            else
+            {
+            	ss << "Field Visualizer | " << (useGpuSlicing ? "GPU" : "CPU") << " | FPS: " << frameCount;
+            }
             glfwSetWindowTitle(window, ss.str().c_str());
             frameCount = 0;								
             lastTime = currentTime;
