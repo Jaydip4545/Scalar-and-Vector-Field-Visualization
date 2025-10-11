@@ -1,16 +1,17 @@
 import numpy as np
 import os
-import re # Import the regular expression module
-import sys # Import the sys module to handle command-line arguments
+import re
+import sys
 
-def convert_raw_to_vtk(raw_filepath, vtk_filepath, dims, spacing=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0)):
+def convert_raw_to_vtk(raw_filepath, vtk_filepath, dims, dtype, spacing=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0)):
     """
-    Converts a raw binary file (uint8) to a VTK structured points file.
+    Converts a raw binary file (uint8 or float32) to a VTK structured points file.
 
     Args:
         raw_filepath (str): Path to the input raw file.
         vtk_filepath (str): Path to the output VTK file.
         dims (tuple): A tuple of three integers (width, height, depth).
+        dtype (type): NumPy data type (np.uint8 or np.float32).
         spacing (tuple, optional): A tuple of three floats for voxel spacing (dx, dy, dz). Defaults to (1.0, 1.0, 1.0).
         origin (tuple, optional): A tuple of three floats for the dataset's origin (x, y, z). Defaults to (0.0, 0.0, 0.0).
     """
@@ -19,10 +20,11 @@ def convert_raw_to_vtk(raw_filepath, vtk_filepath, dims, spacing=(1.0, 1.0, 1.0)
         return
 
     print(f"Reading raw file: {raw_filepath}")
-    
+    print(f"Data type: {dtype.__name__}")
+
     # Read the binary data using numpy
     try:
-        data = np.fromfile(raw_filepath, dtype=np.uint8)
+        data = np.fromfile(raw_filepath, dtype=dtype)
     except IOError as e:
         print(f"Error reading file: {e}")
         return
@@ -31,14 +33,14 @@ def convert_raw_to_vtk(raw_filepath, vtk_filepath, dims, spacing=(1.0, 1.0, 1.0)
     expected_size = dims[0] * dims[1] * dims[2]
     if data.size != expected_size:
         print(f"Error: Data size mismatch!")
-        print(f"  Expected {expected_size} bytes based on dimensions {dims}.")
-        print(f"  Found {data.size} bytes in the file.")
+        print(f"  Expected {expected_size} elements based on dimensions {dims}.")
+        print(f"  Found {data.size} elements in the file.")
         return
-        
-    print(f"Successfully read {data.size} bytes.")
+
+    print(f"Successfully read {data.size} elements.")
 
     print(f"Writing VTK file: {vtk_filepath}")
-    
+
     with open(vtk_filepath, 'w') as f:
         # --- VTK Header ---
         f.write("# vtk DataFile Version 3.0\n")
@@ -48,12 +50,12 @@ def convert_raw_to_vtk(raw_filepath, vtk_filepath, dims, spacing=(1.0, 1.0, 1.0)
         f.write(f"DIMENSIONS {dims[0]} {dims[1]} {dims[2]}\n")
         f.write(f"SPACING {spacing[0]} {spacing[1]} {spacing[2]}\n")
         f.write(f"ORIGIN {origin[0]} {origin[1]} {origin[2]}\n")
-        
+
         # --- Point Data ---
         f.write(f"POINT_DATA {data.size}\n")
         f.write("FIELD FieldData 1\n")
         f.write(f"ScalarField 1 {data.size} double\n")
-        
+
         # --- Write Data Values ---
         for i, value in enumerate(data):
             f.write(str(value) + " ")
@@ -64,15 +66,20 @@ def convert_raw_to_vtk(raw_filepath, vtk_filepath, dims, spacing=(1.0, 1.0, 1.0)
     print(f"You can now open '{vtk_filepath}' in ParaView or other VTK viewers.")
 
 
-def create_dummy_raw_file(filepath, dims):
-    """Creates a sample raw file with a predictable gradient for testing."""
-    print(f"Creating a dummy raw file at '{filepath}' with dimensions {dims}")
+def create_dummy_raw_file(filepath, dims, dtype):
+    """Creates a sample raw file with predictable data for testing."""
+    print(f"Creating a dummy raw file at '{filepath}' with dimensions {dims} and type {dtype.__name__}")
     width, height, depth = dims
-    
-    # Create a gradient from 0 to 255
+
     total_voxels = width * height * depth
-    dummy_data = np.arange(total_voxels, dtype=np.uint8) % 256
     
+    if dtype == np.uint8:
+        # Create a gradient from 0 to 255
+        dummy_data = np.arange(total_voxels, dtype=dtype) % 256
+    else:  # float32
+        # Create a gradient from 0.0 to 1.0
+        dummy_data = np.linspace(0.0, 1.0, total_voxels, dtype=dtype)
+
     # Save to file
     dummy_data.tofile(filepath)
     print("Dummy file created.")
@@ -84,40 +91,64 @@ if __name__ == '__main__':
         RAW_FILE = sys.argv[1]
     else:
         print("Usage: python raw_to_vtk.py <path_to_raw_file>")
-        print("Example: python raw_to_vtk.py data/bonsai_256x256x256_uint8.raw\n")
+        print("Example: python raw_to_vtk.py data/magnetic_reconnection_512x512x512_float32.raw")
+        print("Example: python raw_to_vtk.py data/magnetic_reconnection_512x512x512_uint8.raw\n")
         print("No input file provided. Running with a dummy file for demonstration purposes.")
-        RAW_FILE = 'bonsai_256x256x256_uint8.raw'
+        RAW_FILE = 'magnetic_reconnection_512x512x512_float32.raw'
 
-    # --- Automatic Dimension Parsing ---
-    # Get just the filename from the path to parse dimensions
+    # --- Automatic Dimension and Data Type Parsing ---
     filename_only = os.path.basename(RAW_FILE)
-    match = re.search(r'(\d+)x(\d+)x(\d+)', filename_only)
     
-    if match:
-        # Extract dimensions and convert them to integers
-        dims = tuple(map(int, match.groups()))
-        print(f"Successfully parsed dimensions from filename: {dims}")
-
-        # Automatically determine the output filename, placing it next to the input file
-        base_path = os.path.splitext(RAW_FILE)[0]
-        vtk_file = base_path + '.vtk'
-        
-        # If the input file doesn't exist AND we are in "dummy file" mode, create it.
-        if not os.path.exists(RAW_FILE) and len(sys.argv) == 1:
-            print("\n---")
-            print(f"'{RAW_FILE}' not found.")
-            print("Creating a dummy file with the same name and dimensions to run the script.")
-            create_dummy_raw_file(RAW_FILE, dims)
-            print("---\n")
-
-        # Run the conversion
-        convert_raw_to_vtk(
-            raw_filepath=RAW_FILE,
-            vtk_filepath=vtk_file,
-            dims=dims
-        )
-    else:
+    # Parse dimensions
+    dim_match = re.search(r'(\d+)x(\d+)x(\d+)', filename_only)
+    
+    # Parse data type
+    dtype_match = re.search(r'(uint8|float32)', filename_only, re.IGNORECASE)
+    
+    if not dim_match:
         print(f"Error: Could not parse dimensions from the filename '{filename_only}'.")
-        print("Please ensure the filename contains the dimensions in the format 'WIDTHxHEIGHTxDEPTH', for example: 'my_volume_256x256x128_uint8.raw'")
+        print("Please ensure the filename contains the dimensions in the format 'WIDTHxHEIGHTxDEPTH'")
+        print("Example: 'magnetic_reconnection_512x512x512_float32.raw'")
+        sys.exit(1)
+    
+    if not dtype_match:
+        print(f"Error: Could not parse data type from the filename '{filename_only}'.")
+        print("Please ensure the filename contains either 'uint8' or 'float32'")
+        print("Example: 'magnetic_reconnection_512x512x512_float32.raw'")
+        sys.exit(1)
+    
+    # Extract dimensions and convert them to integers
+    dims = tuple(map(int, dim_match.groups()))
+    print(f"Successfully parsed dimensions from filename: {dims}")
+    
+    # Determine the numpy data type
+    dtype_str = dtype_match.group(1).lower()
+    if dtype_str == 'uint8':
+        dtype = np.uint8
+    elif dtype_str == 'float32':
+        dtype = np.float32
+    else:
+        print(f"Error: Unsupported data type '{dtype_str}'")
+        sys.exit(1)
+    
+    print(f"Successfully parsed data type from filename: {dtype_str}")
 
+    # Automatically determine the output filename, placing it next to the input file
+    base_path = os.path.splitext(RAW_FILE)[0]
+    vtk_file = base_path + '.vtk'
 
+    # If the input file doesn't exist AND we are in "dummy file" mode, create it.
+    if not os.path.exists(RAW_FILE) and len(sys.argv) == 1:
+        print("\n---")
+        print(f"'{RAW_FILE}' not found.")
+        print("Creating a dummy file with the same name, dimensions, and data type to run the script.")
+        create_dummy_raw_file(RAW_FILE, dims, dtype)
+        print("---\n")
+
+    # Run the conversion
+    convert_raw_to_vtk(
+        raw_filepath=RAW_FILE,
+        vtk_filepath=vtk_file,
+        dims=dims,
+        dtype=dtype
+    )

@@ -97,19 +97,13 @@ glm::vec3 getColor(float value, float min_val, float max_val) {
 }
 
 int main(int argc, char* argv[]) {
-
-
-
-	
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <path_to_vtk_file> [optional_field_name]" << std::endl;
         std::cerr << "Example: " << argv[0] << " resources/redseaT.vtk TEMP" << std::endl;
         return 1;
     }
-
     std::string vtk_filepath = argv[1];
 
-    // --- GLFW/GLEW Initialization ---
     if (!glfwInit()) return -1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -118,8 +112,7 @@ int main(int argc, char* argv[]) {
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     if (glewInit() != GLEW_OK) return -1;
-    
-    // --- Set Callbacks ---
+
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glfwSetWindowUserPointer(window, &camera);
     glfwSetMouseButtonCallback(window, mouseButtonCallback);
@@ -127,37 +120,22 @@ int main(int argc, char* argv[]) {
     glfwSetScrollCallback(window, scrollCallback);
     glfwSetKeyCallback(window, keyCallback);
 
-    // --- Load Data ---
     VtkParser parser(vtk_filepath);
     if (!parser.read()) return -1;
     std::vector<float> scalars;
-    std::string fieldName;
-    
-    if (argc > 2) {
-        // A field name was provided as the second argument
-        fieldName = argv[2];
-        std::cout << "Attempting to visualize user-specified field: " << fieldName << std::endl;
-    } else {
-        // No field name provided, get the first one from the file
-        fieldName = parser.getFirstFieldName();
-        if (fieldName.empty()) {
-            std::cerr << "Error: No scalar fields found in the VTK file." << std::endl;
-            return -1;
-        }
-        std::cout << "No field specified. Visualizing first available field: " << fieldName << std::endl;
+    std::string fieldName = (argc > 2) ? argv[2] : parser.getFirstFieldName();
+    if (fieldName.empty() || !parser.getScalarField(fieldName, scalars)) {
+        std::cerr << "Error: Could not find or load scalar field '" << fieldName << "'." << std::endl;
+        return -1;
     }
-    
-    
-    
-    if (!parser.getScalarField(fieldName, scalars)) return -1;
-    
+    std::cout << "Visualizing field: " << fieldName << std::endl;
+
     glm::ivec3 dims = parser.getDimensions();
     glm::vec3 spacing = parser.getSpacing();
     glm::vec3 size = glm::vec3(dims - glm::ivec3(1)) * spacing;
     float min_scalar = *std::min_element(scalars.begin(), scalars.end());
     float max_scalar = *std::max_element(scalars.begin(), scalars.end());
-
-    // --- Auto-fit Camera (now using the true size) ---
+     // --- Auto-fit Camera (now using the true size) ---
 
     float radius = glm::length(size) * 0.5f;
 
@@ -166,44 +144,60 @@ int main(int argc, char* argv[]) {
     float distance = radius / tan(fov_radians / 2.0f);
 
     camera.setZoom(distance * 1.5f); // Use new distance 
-    
-    // --- Shaders ---
+
+
+
+
     GLuint textureShader = createShaderProgram("shaders/texture_vertex.glsl", "shaders/texture_fragment.glsl");
     GLuint flatColorShader = createShaderProgram("shaders/flat_color_vertex.glsl", "shaders/flat_color_fragment.glsl");
     GLuint gpuSlicerShader = createShaderProgram("shaders/gpu_slicer_vertex.glsl", "shaders/gpu_slicer_fragment.glsl");
+    GLuint vertexColorShader = createShaderProgram("shaders/mc_cpu_vert.glsl", "shaders/mc_cpu_frag.glsl");
+    GLuint mcGpuShader = createShaderProgram("shaders/mc_gpu_vert.glsl", "shaders/mc_gpu_geo.glsl", "shaders/mc_gpu_frag.glsl");
 
-    // --- Geometry ---
     float box_vertices[] = {0,0,0, 1,0,0, 1,0,0, 1,1,0, 1,1,0, 0,1,0, 0,1,0, 0,0,0, 0,0,1, 1,0,1, 1,0,1, 1,1,1, 1,1,1, 0,1,1, 0,1,1, 0,0,1, 0,0,0, 0,0,1, 1,0,0, 1,0,1, 1,1,0, 1,1,1, 0,1,0, 0,1,1};
     GLuint boxVAO, boxVBO;
     glGenVertexArrays(1, &boxVAO); glGenBuffers(1, &boxVBO);
     glBindVertexArray(boxVAO); glBindBuffer(GL_ARRAY_BUFFER, boxVBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(box_vertices), box_vertices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0); glEnableVertexAttribArray(0);
 
     float axis_vertices[] = {0,0,0, 1,0,0, 0,0,0, 0,1,0, 0,0,0, 0,0,1};
-    GLuint axisVAO_g, axisVBO_g; // Use unique names to avoid bug
+    GLuint axisVAO_g, axisVBO_g;
     glGenVertexArrays(1, &axisVAO_g); glGenBuffers(1, &axisVBO_g);
     glBindVertexArray(axisVAO_g); glBindBuffer(GL_ARRAY_BUFFER, axisVBO_g);
     glBufferData(GL_ARRAY_BUFFER, sizeof(axis_vertices), axis_vertices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0); glEnableVertexAttribArray(0);
 
-    float quad_vertices[] = {0,0,0, 0,0, 1,0,0, 1,0, 1,1,0, 1,1, 0,1,0, 0,1};
+    // *** MODIFICATION 1: Replace single quad with three distinct quads ***
+    float quad_vertices_xy[] = {0,0,0, 0,0,  1,0,0, 1,0,  1,1,0, 1,1,  0,1,0, 0,1};
+    float quad_vertices_xz[] = {0,0,0, 0,0,  1,0,0, 1,0,  1,0,1, 1,1,  0,0,1, 0,1};
+    float quad_vertices_yz[] = {0,0,0, 0,0,  0,1,0, 1,0,  0,1,1, 1,1,  0,0,1, 0,1};
     unsigned int quad_indices[] = {0, 1, 2, 2, 3, 0};
-    GLuint quadVAO, quadVBO, quadEBO;
-    glGenVertexArrays(1, &quadVAO); glGenBuffers(1, &quadVBO); glGenBuffers(1, &quadEBO);
-    glBindVertexArray(quadVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, quadVBO); glBufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices), quad_vertices, GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadEBO); glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(quad_indices), quad_indices, GL_STATIC_DRAW);
+    GLuint quadVAO_xy, quadVBO_xy, quadVAO_xz, quadVBO_xz, quadVAO_yz, quadVBO_yz, quadEBO;
+    glGenVertexArrays(1, &quadVAO_xy); glGenBuffers(1, &quadVBO_xy);
+    glBindVertexArray(quadVAO_xy); glBindBuffer(GL_ARRAY_BUFFER, quadVBO_xy);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices_xy), quad_vertices_xy, GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0); glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float))); glEnableVertexAttribArray(1);
+    glGenVertexArrays(1, &quadVAO_xz); glGenBuffers(1, &quadVBO_xz);
+    glBindVertexArray(quadVAO_xz); glBindBuffer(GL_ARRAY_BUFFER, quadVBO_xz);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices_xz), quad_vertices_xz, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0); glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float))); glEnableVertexAttribArray(1);
+    glGenVertexArrays(1, &quadVAO_yz); glGenBuffers(1, &quadVBO_yz);
+    glBindVertexArray(quadVAO_yz); glBindBuffer(GL_ARRAY_BUFFER, quadVBO_yz);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices_yz), quad_vertices_yz, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0); glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float))); glEnableVertexAttribArray(1);
+    glGenBuffers(1, &quadEBO);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadEBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(quad_indices), quad_indices, GL_STATIC_DRAW);
+    
     
     // --- CPU Slicing Resources ---
     glGenTextures(1, &sliceTexture);
     glBindTexture(GL_TEXTURE_2D, sliceTexture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     std::vector<unsigned char> textureData;
 
     // --- GPU Slicing Resources ---
@@ -222,67 +216,32 @@ int main(int argc, char* argv[]) {
     std::vector<glm::vec3> colormap_data;
     for(int i = 0; i < 256; ++i) colormap_data.push_back(getColor((float)i, 0.0f, 255.0f));
     glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB, colormap_data.size(), 0, GL_RGB, GL_FLOAT, colormap_data.data());
-    
-    
-     // --- Marching Cubes Setup ---
+
+    // --- Marching Cubes Setup ---
     MarchingCubes mc;
     GLuint isoVAO, isoVBO;
-    glGenVertexArrays(1, &isoVAO);
-    glGenBuffers(1, &isoVBO);
-    glBindVertexArray(isoVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, isoVBO);
-    // Setup vertex attributes for our Vertex struct (pos and color)
-    // Position
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, pos));
-    glEnableVertexAttribArray(0);
-    // Color
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color));
-    glEnableVertexAttribArray(1);
+    glGenVertexArrays(1, &isoVAO); glGenBuffers(1, &isoVBO);
+    glBindVertexArray(isoVAO); glBindBuffer(GL_ARRAY_BUFFER, isoVBO);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, pos)); glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color)); glEnableVertexAttribArray(1);
 
-    // Load the new shader for the isosurface
-    GLuint vertexColorShader = createShaderProgram("shaders/mc_cpu_vert.glsl", "shaders/mc_cpu_frag.glsl");
-    
-    
-    
-    //GPU MC setup
-    	 
-    GLuint mcGpuShader = createShaderProgram("shaders/mc_gpu_vert.glsl", "shaders/mc_gpu_geo.glsl", "shaders/mc_gpu_frag.glsl");
-    
+    // --- GPU MC setup ---
     GLuint edgeTableTexture, triTableTexture;
-    glGenTextures(1, &edgeTableTexture);
-    glBindTexture(GL_TEXTURE_1D, edgeTableTexture);
-    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenTextures(1, &edgeTableTexture); glBindTexture(GL_TEXTURE_1D, edgeTableTexture);
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexImage1D(GL_TEXTURE_1D, 0, GL_R32I, 256, 0, GL_RED_INTEGER, GL_INT, &MarchingCubes::edgeTable[0]);
-
-    glGenTextures(1, &triTableTexture);
-    glBindTexture(GL_TEXTURE_2D, triTableTexture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenTextures(1, &triTableTexture); glBindTexture(GL_TEXTURE_2D, triTableTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R32I, 16, 256, 0, GL_RED_INTEGER, GL_INT, &MarchingCubes::triTable[0][0]);
-
-    // Create a VBO containing the ID of every cube for the GPU to process
     GLuint numCubes = (dims.x - 1) * (dims.y - 1) * (dims.z - 1);
     std::vector<unsigned int> cubeIDs(numCubes);
-    for (unsigned int i = 0; i < numCubes; ++i) {
-        cubeIDs[i] = i;
-    }
-    
+    for (unsigned int i = 0; i < numCubes; ++i) cubeIDs[i] = i;
     GLuint mcGpuVAO, mcGpuVBO;
-    glGenVertexArrays(1, &mcGpuVAO);
-    glGenBuffers(1, &mcGpuVBO);
-    glBindVertexArray(mcGpuVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, mcGpuVBO);
+    glGenVertexArrays(1, &mcGpuVAO); glGenBuffers(1, &mcGpuVBO);
+    glBindVertexArray(mcGpuVAO); glBindBuffer(GL_ARRAY_BUFFER, mcGpuVBO);
     glBufferData(GL_ARRAY_BUFFER, cubeIDs.size() * sizeof(unsigned int), cubeIDs.data(), GL_STATIC_DRAW);
-    
-    // Use glVertexAttribIPointer for integer vertex attributes (the 'I' is important)
     glEnableVertexAttribArray(0);
     glVertexAttribIPointer(0, 1, GL_UNSIGNED_INT, 0, (void*)0);
-    
-    
-    
-    
-    
 
     // --- Main Loop ---
     glEnable(GL_DEPTH_TEST);
@@ -294,167 +253,109 @@ int main(int argc, char* argv[]) {
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        // --- Common Calculations ---
-        float slice_norm = (sin(glfwGetTime() * 0.5f) * 0.5f + 0.5f);
         int width, height;
         glfwGetFramebufferSize(window, &width, &height);
         if (height == 0) height = 1;
         glm::mat4 view = camera.getViewMatrix();
         glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)width / (float)height, 0.1f, 2000.0f);
         glm::mat4 model = glm::translate(glm::mat4(1.0f), -size / 2.0f) * glm::scale(glm::mat4(1.0f), size);
-
-        glm::mat4 slice_pos_model = glm::mat4(1.0f), slice_rotation_model = glm::mat4(1.0f);
-        switch(slicingAxis){
-            case 0: slice_pos_model = glm::translate(slice_pos_model, glm::vec3(0.5f, 0.5f, slice_norm)); break;
-            case 1: slice_rotation_model = glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f)); slice_pos_model = glm::translate(slice_pos_model, glm::vec3(0.5f, slice_norm, 0.5f)); break;
-            case 2: slice_rotation_model = glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f)); slice_pos_model = glm::translate(slice_pos_model, glm::vec3(slice_norm, 0.5f, 0.5f)); break;
-        }
-        glm::mat4 quad_center_model = glm::translate(glm::mat4(1.0f), glm::vec3(-0.5f, -0.5f, 0.0f));
-        glm::mat4 slice_mvp = projection * view * model * slice_pos_model * slice_rotation_model * quad_center_model;
         
-        // --- Draw Bounding Box & Axis ---
         glUseProgram(flatColorShader);
         glm::mat4 box_mvp = projection * view * model;
         glUniformMatrix4fv(glGetUniformLocation(flatColorShader, "mvp"), 1, GL_FALSE, glm::value_ptr(box_mvp));
         glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 1.0f, 1.0f, 1.0f);
         glBindVertexArray(boxVAO);
         glDrawArrays(GL_LINES, 0, 24);
-        
         glBindVertexArray(axisVAO_g);
         glm::mat4 axis_model = glm::scale(model, glm::vec3(1.1f));
-        glm::mat4 axis_mvp = projection * view * axis_model;
-        glUniformMatrix4fv(glGetUniformLocation(flatColorShader, "mvp"), 1, GL_FALSE, glm::value_ptr(axis_mvp));
+        glUniformMatrix4fv(glGetUniformLocation(flatColorShader, "mvp"), 1, GL_FALSE, glm::value_ptr(projection * view * axis_model));
         glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 1.0f, 0.0f, 0.0f); glDrawArrays(GL_LINES, 0, 2);
         glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 0.0f, 1.0f, 0.0f); glDrawArrays(GL_LINES, 2, 2);
         glUniform3f(glGetUniformLocation(flatColorShader, "ourColor"), 0.0f, 0.0f, 1.0f); glDrawArrays(GL_LINES, 4, 2);
-	if (showIsosurface) {
-        
-        // Animate the isovalue from min to max and back
-        float isovalue_norm = (sin(glfwGetTime() * 0.5f) * 0.5f + 0.5f);
-        float isovalue = min_scalar + isovalue_norm * (max_scalar - min_scalar);
-        
-        
-        
-        if (useGpuMarchingCubes) {
-            // --- GPU ISOSURFACE RENDER PATH ---
-            glUseProgram(mcGpuShader);
-            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_3D, volumeTexture);
-            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_1D, edgeTableTexture);
-            glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, triTableTexture);
-            glUniformMatrix4fv(glGetUniformLocation(mcGpuShader, "mvp"), 1, GL_FALSE, glm::value_ptr(box_mvp));
-            glUniform1i(glGetUniformLocation(mcGpuShader, "volumeTexture"), 0);
-            glUniform1i(glGetUniformLocation(mcGpuShader, "edgeTable"), 1);
-            glUniform1i(glGetUniformLocation(mcGpuShader, "triTable"), 2);
-            glUniform1f(glGetUniformLocation(mcGpuShader, "isovalue"), isovalue);
-            glUniform3iv(glGetUniformLocation(mcGpuShader, "dataDimensions"), 1, glm::value_ptr(dims));
-            glUniform1ui(glGetUniformLocation(mcGpuShader, "totalCubes"), numCubes);
-            glBindVertexArray(mcGpuVAO);
-            glDrawArrays(GL_POINTS, 0, numCubes);
-        }
-        else
-        {
-        	
-        	// Generate the mesh for the current isovalue
-        std::vector<Vertex> iso_vertices = mc.generateSurface(scalars, dims, isovalue);
-        // *** ADD THIS DEBUG LINE ***
-        std::cout << "Isovalue: " << isovalue << "  |  Generated Vertices: " << iso_vertices.size() << "\r";
 
-		if (!iso_vertices.empty()) {
-            
-            // *** THE CORRECT ORDER ***
-
-            // 1. Bind the VAO for the isosurface FIRST.
-            // This activates the entire "preset" for our isosurface mesh.
-            glBindVertexArray(isoVAO);
-
-            // 2. Bind the VBO associated with this VAO.
-            glBindBuffer(GL_ARRAY_BUFFER, isoVBO);
-
-            // 3. Now, upload the data to the currently bound VBO.
-            glBufferData(GL_ARRAY_BUFFER, iso_vertices.size() * sizeof(Vertex), iso_vertices.data(), GL_DYNAMIC_DRAW);
-
-            // 4. Use the correct shader and set its uniforms.
-            glUseProgram(vertexColorShader);
-            glm::mat4 iso_mvp = projection * view * model;
-            glUniformMatrix4fv(glGetUniformLocation(vertexColorShader, "mvp"), 1, GL_FALSE, glm::value_ptr(iso_mvp));
-            
-            // 5. Draw the mesh. The correct VAO is already bound.
-            glDrawArrays(GL_TRIANGLES, 0, iso_vertices.size());
-       	 }
-        
-        
-        
-        
-        }
-        
-        
-        
-        
-        
-        
-        
-        
-
-    	} 
-    	else
-    	{
-    
-    		// --- Conditional Rendering ---
-        if (useGpuSlicing) {
-            // --- GPU RENDER PATH ---
-            glUseProgram(gpuSlicerShader);
-            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_3D, volumeTexture);
-            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_1D, colormapTexture);
-            
-            // Set all uniforms
-            glUniform1i(glGetUniformLocation(gpuSlicerShader, "volumeTexture"), 0);
-            glUniform1i(glGetUniformLocation(gpuSlicerShader, "colormapTexture"), 1);
-            glUniform1f(glGetUniformLocation(gpuSlicerShader, "minScalar"), min_scalar);
-            glUniform1f(glGetUniformLocation(gpuSlicerShader, "maxScalar"), max_scalar);
-            
-            // Send the two NEW uniforms
-            glUniform1f(glGetUniformLocation(gpuSlicerShader, "sliceNorm"), slice_norm);
-            glUniform1i(glGetUniformLocation(gpuSlicerShader, "slicingAxis"), slicingAxis);
-
-            // Send the MVP matrix (this is now the same for both shaders)
-            glUniformMatrix4fv(glGetUniformLocation(gpuSlicerShader, "mvp"), 1, GL_FALSE, glm::value_ptr(slice_mvp));
-        } else {
-            int texWidth, texHeight;
-            switch(slicingAxis){
-                case 0: texWidth = dims.x; texHeight = dims.y; textureData.resize(texWidth * texHeight * 3); for(int y=0;y<texHeight;++y)for(int x=0;x<texWidth;++x){ float v = parser.getValue(scalars,glm::vec3(x,y,slice_norm*(dims.z-1.f))); glm::vec3 c=getColor(v,min_scalar,max_scalar); int i=(y*texWidth+x)*3; textureData[i]=c.r*255; textureData[i+1]=c.g*255; textureData[i+2]=c.b*255; } break;
-                case 1: texWidth = dims.x; texHeight = dims.z; textureData.resize(texWidth * texHeight * 3); for(int z=0;z<texHeight;++z)for(int x=0;x<texWidth;++x){ float v = parser.getValue(scalars,glm::vec3(x,slice_norm*(dims.y-1.f),z)); glm::vec3 c=getColor(v,min_scalar,max_scalar); int i=(z*texWidth+x)*3; textureData[i]=c.r*255; textureData[i+1]=c.g*255; textureData[i+2]=c.b*255; } break;
-                case 2: texWidth = dims.y; texHeight = dims.z; textureData.resize(texWidth * texHeight * 3); for(int z=0;z<texHeight;++z)for(int y=0;y<texWidth;++y){ float v = parser.getValue(scalars,glm::vec3(slice_norm*(dims.x-1.f),y,z)); glm::vec3 c=getColor(v,min_scalar,max_scalar); int i=(z*texWidth+y)*3; textureData[i]=c.r*255; textureData[i+1]=c.g*255; textureData[i+2]=c.b*255; } break;
+	    if (showIsosurface) {
+            float isovalue_norm = (sin(glfwGetTime() * 0.5f) * 0.5f + 0.5f);
+            float isovalue = min_scalar + isovalue_norm * (max_scalar - min_scalar);
+            if (useGpuMarchingCubes) {
+                glUseProgram(mcGpuShader);
+                glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_3D, volumeTexture);
+                glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_1D, edgeTableTexture);
+                glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, triTableTexture);
+                glUniformMatrix4fv(glGetUniformLocation(mcGpuShader, "mvp"), 1, GL_FALSE, glm::value_ptr(box_mvp));
+                glUniform1i(glGetUniformLocation(mcGpuShader, "volumeTexture"), 0);
+                glUniform1i(glGetUniformLocation(mcGpuShader, "edgeTable"), 1);
+                glUniform1i(glGetUniformLocation(mcGpuShader, "triTable"), 2);
+                glUniform1f(glGetUniformLocation(mcGpuShader, "isovalue"), isovalue);
+                glUniform3iv(glGetUniformLocation(mcGpuShader, "dataDimensions"), 1, glm::value_ptr(dims));
+                glUniform1ui(glGetUniformLocation(mcGpuShader, "totalCubes"), numCubes);
+                glBindVertexArray(mcGpuVAO);
+                glDrawArrays(GL_POINTS, 0, numCubes);
+            } else {
+                std::vector<Vertex> iso_vertices = mc.generateSurface(scalars, dims, isovalue);
+                if (!iso_vertices.empty()) {
+                    glBindVertexArray(isoVAO);
+                    glBindBuffer(GL_ARRAY_BUFFER, isoVBO);
+                    glBufferData(GL_ARRAY_BUFFER, iso_vertices.size() * sizeof(Vertex), iso_vertices.data(), GL_DYNAMIC_DRAW);
+                    glUseProgram(vertexColorShader);
+                    glUniformMatrix4fv(glGetUniformLocation(vertexColorShader, "mvp"), 1, GL_FALSE, glm::value_ptr(box_mvp));
+                    glDrawArrays(GL_TRIANGLES, 0, iso_vertices.size());
+                }
             }
-	    glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, sliceTexture);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texWidth, texHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, textureData.data());
-            glUseProgram(textureShader);
-            glUniform1i(glGetUniformLocation(textureShader, "ourTexture"), 0);
-            glUniformMatrix4fv(glGetUniformLocation(textureShader, "mvp"), 1, GL_FALSE, glm::value_ptr(slice_mvp));
-        }
-        
-        glBindVertexArray(quadVAO);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-    
-    
-    
-    
-    	}
-        
+    	} else {
+                       float slice_norm = (sin(glfwGetTime() * 0.5f) * 0.5f + 0.5f);
+            glm::mat4 slice_mvp;
+            
+            glm::mat4 slice_translation_model = glm::mat4(1.0f);
+            switch(slicingAxis){
+                case 0: slice_translation_model = glm::translate(slice_translation_model, glm::vec3(-size.x/2.0f, -size.y/2.0f, -size.z/2.0f + slice_norm * size.z)); break;
+                case 1: slice_translation_model = glm::translate(slice_translation_model, glm::vec3(-size.x/2.0f, -size.y/2.0f + slice_norm * size.y, -size.z/2.0f)); break;
+                case 2: slice_translation_model = glm::translate(slice_translation_model, glm::vec3(-size.x/2.0f + slice_norm * size.x, -size.y/2.0f, -size.z/2.0f)); break;
+            }
+            glm::mat4 slice_scale = glm::scale(glm::mat4(1.0f), size);
+            slice_mvp = projection * view * slice_translation_model * slice_scale;
 
-        // --- FPS Counter ---
+            if (useGpuSlicing) {
+                glUseProgram(gpuSlicerShader);
+                glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_3D, volumeTexture);
+                glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_1D, colormapTexture);
+                glUniform1i(glGetUniformLocation(gpuSlicerShader, "volumeTexture"), 0);
+                glUniform1i(glGetUniformLocation(gpuSlicerShader, "colormapTexture"), 1);
+                glUniform1f(glGetUniformLocation(gpuSlicerShader, "minScalar"), min_scalar);
+                glUniform1f(glGetUniformLocation(gpuSlicerShader, "maxScalar"), max_scalar);
+                glUniform1f(glGetUniformLocation(gpuSlicerShader, "sliceNorm"), slice_norm);
+                glUniform1i(glGetUniformLocation(gpuSlicerShader, "slicingAxis"), slicingAxis);
+                glUniformMatrix4fv(glGetUniformLocation(gpuSlicerShader, "mvp"), 1, GL_FALSE, glm::value_ptr(slice_mvp));
+            } else {
+                int texWidth, texHeight;
+                               switch(slicingAxis){
+                    case 0: texWidth = dims.x; texHeight = dims.y; textureData.resize(texWidth * texHeight * 3); for(int y=0;y<texHeight;++y)for(int x=0;x<texWidth;++x){ float v = parser.getValue(scalars,glm::vec3(x,y,slice_norm*(dims.z-1.f))); glm::vec3 c=getColor(v,min_scalar,max_scalar); int i=(y*texWidth+x)*3; textureData[i]=c.r*255; textureData[i+1]=c.g*255; textureData[i+2]=c.b*255; } break;
+                    case 1: texWidth = dims.x; texHeight = dims.z; textureData.resize(texWidth * texHeight * 3); for(int z=0;z<texHeight;++z)for(int x=0;x<texWidth;++x){ float v = parser.getValue(scalars,glm::vec3(x,slice_norm*(dims.y-1.f),z)); glm::vec3 c=getColor(v,min_scalar,max_scalar); int i=(z*texWidth+x)*3; textureData[i]=c.r*255; textureData[i+1]=c.g*255; textureData[i+2]=c.b*255; } break;
+                    case 2: texWidth = dims.y; texHeight = dims.z; textureData.resize(texWidth * texHeight * 3); for(int z=0;z<texHeight;++z)for(int y=0;y<texWidth;++y){ float v = parser.getValue(scalars,glm::vec3(slice_norm*(dims.x-1.f),y,z)); glm::vec3 c=getColor(v,min_scalar,max_scalar); int i=(z*texWidth+y)*3; textureData[i]=c.r*255; textureData[i+1]=c.g*255; textureData[i+2]=c.b*255; } break;
+                }
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, sliceTexture);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texWidth, texHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, textureData.data());
+                glUseProgram(textureShader);
+                glUniform1i(glGetUniformLocation(textureShader, "ourTexture"), 0);
+                glUniformMatrix4fv(glGetUniformLocation(textureShader, "mvp"), 1, GL_FALSE, glm::value_ptr(slice_mvp));
+            }
+                        switch(slicingAxis) {
+                case 0: glBindVertexArray(quadVAO_xy); break;
+                case 1: glBindVertexArray(quadVAO_xz); break;
+                case 2: glBindVertexArray(quadVAO_yz); break;
+            }
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadEBO);
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    	}
+
         double currentTime = glfwGetTime();
         frameCount++;
         if (currentTime - lastTime >= 1.0) {
             std::stringstream ss;
-            
-            if(showIsosurface)
-            {
-            	ss << "Field Visualizer | " << (useGpuMarchingCubes ? "GPU" : "CPU") << " | FPS: " << frameCount;
-            }
-            else
-            {
-            	ss << "Field Visualizer | " << (useGpuSlicing ? "GPU" : "CPU") << " | FPS: " << frameCount;
+            if(showIsosurface) {
+                ss << "Field Visualizer | " << (useGpuMarchingCubes ? "GPU" : "CPU") << " | FPS: " << frameCount;
+            } else {
+                ss << "Field Visualizer | " << (useGpuSlicing ? "GPU" : "CPU") << " | FPS: " << frameCount;
             }
             glfwSetWindowTitle(window, ss.str().c_str());
             frameCount = 0;								
@@ -466,20 +367,18 @@ int main(int argc, char* argv[]) {
     }
     
     // --- Cleanup ---
-    glDeleteVertexArrays(1, &isoVAO);
-    glDeleteBuffers(1, &isoVBO);
-    glDeleteProgram(vertexColorShader);
-    glDeleteVertexArrays(1, &boxVAO); glDeleteBuffers(1, &boxVBO);
+       glDeleteVertexArrays(1, &boxVAO); glDeleteBuffers(1, &boxVBO);
     glDeleteVertexArrays(1, &axisVAO_g); glDeleteBuffers(1, &axisVBO_g);
-    glDeleteVertexArrays(1, &quadVAO); glDeleteBuffers(1, &quadVBO); glDeleteBuffers(1, &quadEBO);
+    glDeleteVertexArrays(1, &quadVAO_xy); glDeleteBuffers(1, &quadVBO_xy);
+    glDeleteVertexArrays(1, &quadVAO_xz); glDeleteBuffers(1, &quadVBO_xz);
+    glDeleteVertexArrays(1, &quadVAO_yz); glDeleteBuffers(1, &quadVBO_yz);
+    glDeleteBuffers(1, &quadEBO);
+    glDeleteVertexArrays(1, &isoVAO); glDeleteBuffers(1, &isoVBO);
+    glDeleteVertexArrays(1, &mcGpuVAO); glDeleteBuffers(1, &mcGpuVBO);
     glDeleteProgram(textureShader); glDeleteProgram(flatColorShader); glDeleteProgram(gpuSlicerShader);
+    glDeleteProgram(vertexColorShader); glDeleteProgram(mcGpuShader);
     glDeleteTextures(1, &sliceTexture); glDeleteTextures(1, &volumeTexture); glDeleteTextures(1, &colormapTexture);
-    glDeleteProgram(mcGpuShader);
-    glDeleteTextures(1, &edgeTableTexture);
-    glDeleteTextures(1, &triTableTexture);
-    glDeleteVertexArrays(1, &mcGpuVAO);
-    glDeleteBuffers(1, &mcGpuVBO);
-    
+    glDeleteTextures(1, &edgeTableTexture); glDeleteTextures(1, &triTableTexture);
     
     glfwTerminate();
     return 0;
